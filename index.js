@@ -19,7 +19,7 @@ const emojis = function getEmojis(temp) {
 var TwemojiInput = function(obj){
   /* Declarative Part */
 
-  var Emoji = emojis(temp)
+  let Emoji = emojis(temp)
       prefix = '_twemoji',
       size = 32,
       saveAsImg = false,
@@ -33,7 +33,8 @@ var TwemojiInput = function(obj){
       defaultIcon = document.createElement('div'),
       lastCaretPostion = 0;
       compositing = false;
-      entering = false;
+      pasting = false;
+      loading = true;
 
   /* Contenteditable iframe with simple API. You can access it with TwemojiInput.Editor */
 
@@ -48,14 +49,14 @@ var TwemojiInput = function(obj){
 
     t.styles = document.createElement('style');
     t.styles.setAttribute('type', 'text/css');
-    t.styles.innerText = 'body {margin: 0; font-size: 20px; line-height: 24px;} body > div{border: none; -moz-appearance: textfield-multiline; -webkit-appearance: textarea; resize: vertical; font: medium -moz-fixed; font: -webkit-small-control; font-size: inherit; font-family: inherit; height: 100%; min-height: 150px; overflow: hidden; overflow-y: auto;} img.emoji{height: 18px; width: 18px; vertical-align: bottom; margin: 0 3px;} span[contentEditable=true]:empty::before {content: attr(data-placeholder); opacity: 0.5;} span[contentEditable=true] {display: inline-block; width: 100%; height: 100%; white-space: pre-wrap; outline: none; user-select: text; overflow-wrap: break-word;} span[contentEditable=true]:focus {outline: none;} body > div >span{-webkit-user-select: text; user-select: text;}';
+    t.styles.innerText = 'body {margin: 0; font-size: 20px; line-height: 24px;} body > div{border: none; -moz-appearance: textfield-multiline; -webkit-appearance: textarea; resize: vertical; font: medium -moz-fixed; font: -webkit-small-control; font-size: inherit; font-family: inherit; height: 100%; min-height: 150px; overflow: hidden; overflow-y: auto;} img.emoji{height: 18px; width: 18px; vertical-align: bottom; margin: 0 3px;} span[contentEditable=true]:empty::before {content: attr(data-placeholder); opacity: 0.5;} div.editor {width: 100%; height: 100%; white-space: pre-wrap; outline: none; user-select: text; overflow-wrap: break-word; -webkit-user-select: text; user-select: text;} div[contentEditable=true]:focus {outline: none;}';
 
     t.content.head.appendChild(t.styles);
   };
 
   Editor.prototype.focus = function(){
     var t = this;
-    t.content.body.querySelector('span').focus();
+    t.editor.focus();
   };
 
   Editor.prototype.getPos = function() {
@@ -83,24 +84,29 @@ var TwemojiInput = function(obj){
     return caretPos;
   }
 
-  Editor.prototype.setPos = function(index) {
+  Editor.prototype.setPos = function(indexEditor, indexBlock, entering=false) {
     var t = this;
+    const pos = entering ? 0 : 1;
     // Creates range object
     var setpos = t.content.createRange();
-              
+
     // Creates object for selection
     var set = t.content.getSelection();
-      
+
     // Set start position of range
-    setpos.setStartAfter(t.content.body.querySelector('span').children[index], 0);
-      
+    // setpos.selectNodeContents(t.editor.children[indexEditor].children[indexBlock]);
+    // console.log(setpos)
+    setpos.setStart(t.editor.children[indexEditor].children[indexBlock], pos);
+    setpos.setEnd(t.editor.children[indexEditor].children[indexBlock], pos);
+
+
     // Collapse range within its boundary points
     // Returns boolean
     setpos.collapse(true);
-      
+
     // Remove all ranges set
     set.removeAllRanges();
-      
+
     // Add range with respect to range object.
     set.addRange(setpos);
   }
@@ -113,17 +119,30 @@ var TwemojiInput = function(obj){
       if (t.content.getSelection) {
         // IE9 and non-IE
         sel = t.content.getSelection();
+        console.log(sel.anchorOffset)
         if (sel.getRangeAt && sel.rangeCount) {
           range = sel.getRangeAt(0);
           console.log(range.endOffset)
           const currentOffset = range.endOffset
           console.log(sel.anchorNode.className)
-          if (sel.anchorNode.className === 'editor') {
-            t.setPos(t.emojiToEditor(sel, html, currentOffset))
-          } else if (sel.anchorNode.parentNode.parentNode.parentNode.parentNode.className === 'emoji-text') {
-            t.setPos(t.emojiToEmoji(sel, html, currentOffset))
+          let currentFocus = sel.focusNode;
+          if (currentFocus.nodeName === '#text') {
+            if (currentFocus.parentElement.closest('.emoji-text')) {
+              currentFocus = currentFocus.parentElement.closest('.emoji-text');
+            } else {
+              currentFocus = currentFocus.parentElement.closest('.text')
+            }
+          }
+          console.log(currentFocus.cloneNode(true))
+          if (currentFocus.className === 'text') {
+            const index = t.emojiToText(currentFocus, html, currentOffset)
+            t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
+          } else if (currentFocus.className === 'emoji-text') {
+            const index = t.emojiToEmoji(currentFocus, html, currentOffset)
+            t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
           } else {
-            t.setPos(t.emojiToText(sel, html, currentOffset))
+            console.log('dame it');
+            console.log(currentFocus);
           }
         }
       } else if ( (sel = t.content.selection) && sel.type != "Control") {
@@ -143,140 +162,199 @@ var TwemojiInput = function(obj){
     return insert();
   };
 
-  Editor.prototype.emojiToEditor = function(sel, html, currentOffset) {
+  Editor.prototype.paste = function(html) {
+    console.log(createBlockForPaste(html))
     var t = this;
-    html = convertImgToSpan(html)
-    var el = document.createElement("div");
-    el.innerHTML = html;
-    let indexFocus = 0;
-    if (sel.anchorNode.children.length === 0) {
-      for (let i = 0; i < el.children.length; i++) {
-        const childDom = el.children[i].cloneNode(true);
-        t.content.body.querySelector('span').appendChild(childDom)
+    var sel, range;
+    if (t.content.getSelection) {
+      // IE9 and non-IE
+      sel = t.content.getSelection();
+      if (sel.getRangeAt && sel.rangeCount) {
+        range = sel.getRangeAt(0);
+        console.log(range.endOffset)
+        const currentOffset = range.endOffset
+        console.log(sel.anchorNode.className)
+        let currentFocus = sel.focusNode;
+        if (currentFocus.nodeName === '#text') {
+          if (currentFocus.parentElement.closest('.emoji-text')) {
+            currentFocus = currentFocus.parentElement.closest('.emoji-text');
+          } else {
+            currentFocus = currentFocus.parentElement.closest('.text')
+          }
+        }
+        console.log(currentFocus.cloneNode(true))
+        let pasteHTML = createBlockForPaste(html);
+        let currentBlock = currentFocus.parentElement.closest('.block');
+        let indexChildrenOfBlock = Array.prototype.indexOf.call(currentBlock.children, currentFocus);
+        const indexChildrenOfEditor = Array.prototype.indexOf.call(currentBlock.parentNode.children, currentBlock);
+        let newIndexChildrenOfBlock = 0;
+        let newIndexChildrenOfEditor = indexChildrenOfEditor;
+        if (currentFocus.className === 'text') {
+          newIndexChildrenOfBlock = pasteHTML.lastChild.children.length - 1;
+          if (currentOffset === 0) {
+            let currentBlockEnd = currentBlock.cloneNode(true);
+            for (let i = 0; i < currentBlockEnd.children.length; i++) {
+              pasteHTML.lastChild.appendChild(currentBlockEnd.children[i]);
+            }
+            currentBlock.innerHTML = pasteHTML.firstChild.innerHTML;
+          } else {
+            let text = currentFocus.textContent;
+            let textRemoved = text.substring(currentOffset, text.length);
+            console.log(textRemoved);
+            if (textRemoved) {
+              currentFocus.children[0].textContent = text.substring(0, currentOffset)
+              pasteHTML.lastChild.appendChild(createTextSpan(textRemoved));
+            }
+
+            let childrenLength = currentBlock.children.length;
+            for (let i = indexChildrenOfBlock + 1; i < childrenLength; i++) {
+              let element = currentBlock.children[indexChildrenOfBlock + 1].cloneNode(true);
+              currentBlock.children[indexChildrenOfBlock + 1].remove();
+              pasteHTML.lastChild.appendChild(element);
+            }
+            for (let i = 0; i < pasteHTML.firstChild.children.length; i++) {
+              let element = pasteHTML.firstChild.children[i].cloneNode(true);
+              currentBlock.appendChild(element);
+            }
+          }
+
+          for (let i = 1; i < pasteHTML.children.length; i++) {
+            newIndexChildrenOfEditor++;
+            const childDom = pasteHTML.children[i].cloneNode(true);
+            t.editor.insertBefore(childDom, t.editor.children[indexChildrenOfEditor + i - 1].nextSibling);
+          }
+          t.setPos(newIndexChildrenOfEditor, newIndexChildrenOfBlock);
+          t.focus();
+        } else if (currentFocus.className === 'emoji-text') {
+          newIndexChildrenOfBlock = pasteHTML.lastChild.children.length - 1;
+          if (currentOffset === 0) {
+            let currentBlockEnd = currentBlock.cloneNode(true);
+            for (let i = 0; i < currentBlockEnd.children.length; i++) {
+              pasteHTML.lastChild.appendChild(currentBlockEnd.children[i]);
+            }
+            currentBlock.innerHTML = pasteHTML.firstChild.innerHTML;
+          } else {
+            let childrenLength = currentBlock.children.length;
+            for (let i = indexChildrenOfBlock + 1; i < childrenLength; i++) {
+              let element = currentBlock.children[indexChildrenOfBlock + 1].cloneNode(true);
+              currentBlock.children[indexChildrenOfBlock + 1].remove();
+              pasteHTML.lastChild.appendChild(element);
+            }
+            for (let i = 0; i < pasteHTML.firstChild.children.length; i++) {
+              let element = pasteHTML.firstChild.children[i].cloneNode(true);
+              currentBlock.appendChild(element);
+            }
+          }
+
+          for (let i = 1; i < pasteHTML.children.length; i++) {
+            newIndexChildrenOfEditor++;
+            const childDom = pasteHTML.children[i].cloneNode(true);
+            t.editor.insertBefore(childDom, t.editor.children[indexChildrenOfEditor + i - 1].nextSibling);
+          }
+          t.setPos(newIndexChildrenOfEditor, newIndexChildrenOfBlock);
+          t.focus();
+        } else {
+          console.log('dame it');
+          console.log(currentFocus);
+        }
       }
-      return el.children.length - 1;
     }
-
-    for (let i = 0; i < el.children.length; i++) {
-      const childDom = el.children[i].cloneNode(true);
-      t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[currentOffset + i]);
-    }
-
-    return currentOffset + el.children.length - 1;
   }
 
-  Editor.prototype.emojiToEmoji = function(sel, html, currentOffset, replace=false) {
-    var t = this;
-    const ele = sel.anchorNode.parentNode.parentNode.parentNode.parentNode;
-    parent = ele.parentNode
-    const indexChildrenOfEditor = Array.prototype.indexOf.call(parent.children, ele);
+  Editor.prototype.emojiToEmoji = function(currentFocus, html, currentOffset, replace=false) {
+    let currentBlock = currentFocus.parentElement.closest('.block');
+    let indexChildrenOfBlock = Array.prototype.indexOf.call(currentBlock.children, currentFocus);
+    const indexChildrenOfEditor = Array.prototype.indexOf.call(currentBlock.parentNode.children, currentBlock);
     html = convertImgToSpan(html)
-    var el = document.createElement("div");
+    let el = document.createElement("div");
     el.innerHTML = html;
-    let indexFocus = indexChildrenOfEditor + el.children.length;
-    pos = el.lastChild.innerText.length
-    if (replace === true) {
-      t.content.body.querySelector('span').removeChild(t.content.body.querySelector('span').childNodes[indexChildrenOfEditor])
+    if (replace) {
+      currentFocus.remove();
       for (let i = 0; i < el.children.length; i++) {
         const childDom = el.children[i].cloneNode(true);
-        t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[indexChildrenOfEditor + i]);
+        currentBlock.insertBefore(childDom, currentBlock.children[indexChildrenOfBlock + i]);
       }
-      // Do thay remove thằng trên để append toàn bộ el nên el.children.length tính cả thằng cũ
-      indexFocus -= 1;
+      indexChildrenOfBlock += el.children.length - 1;
+    } else {
+      if (indexChildrenOfBlock === 0 && currentOffset === 0) {
+        for (let i = 0; i < el.children.length; i++) {
+          const childDom = el.children[i].cloneNode(true);
+          currentBlock.insertBefore(childDom, currentBlock.children[indexChildrenOfBlock + i]);
+        }
+        if (el.children.length > 1) {
+          indexChildrenOfBlock += el.children.length - 1;
+        }
+      } else {
+        for (let i = 0; i < el.children.length; i++) {
+          const childDom = el.children[i].cloneNode(true);
+          currentBlock.insertBefore(childDom, currentBlock.children[indexChildrenOfBlock + i].nextSibling);
+        }
+        indexChildrenOfBlock += el.children.length;
+      }
+    }
+    return {
+      indexChildrenOfBlock: indexChildrenOfBlock,
+      indexChildrenOfEditor: indexChildrenOfEditor
+    }
+  }
+
+  Editor.prototype.emojiToText = function(currentFocus, html, currentOffset, paste = false) {
+    let currentBlock = currentFocus.parentElement.closest('.block');
+    let indexChildrenOfBlock = Array.prototype.indexOf.call(currentBlock.children, currentFocus);
+    const indexChildrenOfEditor = Array.prototype.indexOf.call(currentBlock.parentNode.children, currentBlock);
+    if (currentBlock.textContent === '') {
+      currentBlock.innerHTML = convertImgToSpan(html);
+      indexChildrenOfBlock = currentBlock.children.length - 1;
     } else {
       if (currentOffset === 0) {
+        html = convertImgToSpan(html)
+        let el = document.createElement("div");
+        el.innerHTML = html;
         for (let i = 0; i < el.children.length; i++) {
           const childDom = el.children[i].cloneNode(true);
-          t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[indexChildrenOfEditor + i]);
+          currentBlock.insertBefore(childDom, currentBlock.children[indexChildrenOfBlock + i]);
         }
-        indexFocus -= 1;
-      } else{
+        if (el.children.length > 1) {
+          indexChildrenOfBlock += el.children.length - 1;
+        }
+      } else if (currentOffset === currentBlock.textContent.length) {
+        html = convertImgToSpan(html)
+        let el = document.createElement("div");
+        el.innerHTML = html;
         for (let i = 0; i < el.children.length; i++) {
           const childDom = el.children[i].cloneNode(true);
-          t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[indexChildrenOfEditor + i].nextSibling);
+          currentBlock.insertBefore(childDom, currentBlock.children[indexChildrenOfBlock + i].nextSibling);
         }
+        indexChildrenOfBlock += 1;
+      } else {
+        html += currentFocus.textContent.substring(currentOffset, currentFocus.textContent.length)
+        html = convertImgToSpan(html)
+        let el = document.createElement("div");
+        el.innerHTML = html;
+        currentFocus.children[0].textContent = currentFocus.textContent.substring(0, currentOffset)
+        for (let i = 0; i < el.children.length; i++) {
+          const childDom = el.children[i].cloneNode(true);
+          currentBlock.insertBefore(childDom, currentBlock.children[indexChildrenOfBlock + i].nextSibling);
+        }
+        // Di chuyển đến thằng emoji vừa được thêm vào.
+        indexChildrenOfBlock += 1;
       }
     }
-    return indexFocus;
-  }
-
-  Editor.prototype.emojiToText = function(sel, html, currentOffset) {
-    var t = this;
-    const ele = sel.anchorNode.parentNode.parentNode;
-    parent = ele.parentNode
-    let indexFocus = 0;
-    let tmp = document.createElement("div");
-    tmp.innerHTML = convertImgToSpan(html);
-    //Di chuyển đến cuối của của dom khi copy or add emoji
-    indexFocus = Array.prototype.indexOf.call(parent.children, ele) + tmp.children.length;
-    if (currentOffset === 0) {
-      html = convertImgToSpan(html)
-      let el = document.createElement("div");
-      el.innerHTML = html;
-      indexFocus -= 1;
-      pos = el.lastChild.innerText.length
-      for (let i = 0; i < el.children.length; i++) {
-        const childDom = el.children[i].cloneNode(true);
-        t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[Array.prototype.indexOf.call(parent.children, ele) + i]);
-      }
-    } else {
-      const parentCurrentDom = sel.anchorNode.parentNode;
-      html += parentCurrentDom.innerHTML.substring(currentOffset, sel.anchorNode.parentNode.innerHTML.length)
-      html = convertImgToSpan(html)
-      let el = document.createElement("div");
-      el.innerHTML = html;
-      // indexFocus = Array.prototype.indexOf.call(parent.children, ele) + el.children.length;
-      pos = el.lastChild.innerText.length
-      parentCurrentDom.innerHTML = parentCurrentDom.innerHTML.substring(0, currentOffset)
-      for (let i = 0; i < el.children.length; i++) {
-        const childDom = el.children[i].cloneNode(true);
-        t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[Array.prototype.indexOf.call(parent.children, ele) + i].nextSibling);
-      }
+    return {
+      indexChildrenOfBlock: indexChildrenOfBlock,
+      indexChildrenOfEditor: indexChildrenOfEditor
     }
-    return indexFocus;
-  }
-
-  Editor.prototype.emojiToText2 = function(sel, html, currentOffset, head='') {
-    var t = this;
-    const ele = sel.anchorNode.parentNode.parentNode;
-    parent = ele.parentNode
-    const parentCurrentDom = sel.anchorNode.parentNode;
-    let indexFocus = 0;
-    if (head) {
-      html = convertImgToSpan(html)
-      let el = document.createElement("div");
-      el.innerHTML = html;
-      indexFocus = Array.prototype.indexOf.call(parent.children, ele) + el.children.length - 1;
-      pos = el.lastChild.innerText.length
-      parentCurrentDom.innerHTML = head;
-      for (let i = 0; i < el.children.length; i++) {
-        const childDom = el.children[i].cloneNode(true);
-        t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[Array.prototype.indexOf.call(parent.children, ele) + i]);
-      }
-    } else {
-      html = convertImgToSpan(html)
-      let el = document.createElement("div");
-      el.innerHTML = html;
-      indexFocus = Array.prototype.indexOf.call(parent.children, ele) + 1;
-      pos = el.lastChild.innerText.length
-      parentCurrentDom.innerHTML = parentCurrentDom.innerHTML.substring(0, currentOffset)
-      for (let i = 0; i < el.children.length; i++) {
-        const childDom = el.children[i].cloneNode(true);
-        t.content.body.querySelector('span').insertBefore(childDom, t.content.body.querySelector('span').childNodes[Array.prototype.indexOf.call(parent.children, ele) + i].nextSibling);
-      }
-    }
-    return indexFocus;
   }
 
   Editor.prototype.value = function(value){
     var t = this;
 
     if(value){
-      t.content.body.querySelector('span').innerHTML = value;
+      t.editor.innerHTML = value;
       t.updateMirror();
       return value;
     } else {
-      return t.content.body.querySelector('span').innerHTML;
+      return t.editor.innerHTML;
     }
   };
 
@@ -309,16 +387,19 @@ var TwemojiInput = function(obj){
 
   Editor.prototype.listenChanges = function(){
     var t = this;
-    ['mouseup'].map(function(event){
-      t.content.body.querySelector('span').addEventListener(event, function(){
-        wrapper.className = wrapper.className.replace(/ __open/g,'');
-      });
-    });
-    t.content.body.querySelector('span').addEventListener('compositionstart', function(e){
+    t.editor.addEventListener('compositionstart', function(e){
+      console.log(compositing)
       compositing = true;
-      return;
-    })
-    t.content.body.querySelector('span').addEventListener('compositionend', function(e){
+      console.log('compositionstart')
+      // return;
+    }, false)
+    t.editor.addEventListener('compositionupdate', function(e){
+      console.log(e.data)
+      console.log('compositionupdate')
+      // return;
+    }, false)
+    t.editor.addEventListener('compositionend', function(e){
+      console.log('compositionend')
       if (t.content.getSelection) {
         // IE9 and non-IE
         sel = t.content.getSelection();
@@ -326,111 +407,259 @@ var TwemojiInput = function(obj){
           range = sel.getRangeAt(0);
           console.log(range.endOffset)
           const currentOffset = range.endOffset
-          console.log(sel.anchorNode.className)
-          let indexFocus = 0;
-          if (sel.anchorNode.parentNode.className === 'editor') {
-            html = sel.anchorNode.parentNode.innerHTML;
-            sel.anchorNode.parentNode.innerHTML = '';
-            indexFocus = t.emojiToEditor(sel, twemoji.parse(html), currentOffset);
-            t.setPos(indexFocus);
-            t.focus();
-          } else if (sel.anchorNode.parentNode.parentNode.parentNode.parentNode.className === 'emoji-text') {
-            html = sel.anchorNode.parentNode.innerHTML;
-            indexFocus = t.emojiToEmoji(sel, twemoji.parse(html), currentOffset, true)
-            t.setPos(indexFocus);
-            t.focus();
-          } else if (sel.anchorNode.parentNode.parentNode.className === 'text') {
-            let text = sel.anchorNode.parentNode.innerHTML
-            let checkEmoji = text.match(regex)
-            if (checkEmoji) {
-              if (checkEmoji.index === 0) {
-                let html = text.substring(0, checkEmoji[0].length)
-                indexFocus = t.emojiToText2(sel, twemoji.parse(html), checkEmoji.index, text.substring(checkEmoji[0].length, text.length));
-              } else {
-                let html = text.substring(checkEmoji.index, text.length)
-                indexFocus = t.emojiToText2(sel, twemoji.parse(html), checkEmoji.index);
-              }
-              t.setPos(indexFocus);
-              t.focus();
+          let currentFocus = sel.focusNode;
+          if (currentFocus.nodeName === '#text') {
+            if (currentFocus.parentElement.closest('.emoji-text')) {
+              currentFocus = currentFocus.parentElement.closest('.emoji-text');
+            } else {
+              currentFocus = currentFocus.parentElement.closest('.text')
             }
+          }
+          const tmp = currentFocus.cloneNode(true);
+          console.log(tmp)
+          console.log(tmp.innerHTML)
+          if (currentFocus.className === 'text') {
+            if (currentFocus.parentNode.children.length === 1 && currentFocus.children.length === 0) {
+              let html = currentFocus.textContent;
+              currentFocus.textContent = '';
+              const index = t.emojiToText(currentFocus, twemoji.parse(html), currentOffset)
+              console.log(index);
+              t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
+              t.focus();
+            } else {
+              let text = currentFocus.textContent;
+              let checkEmoji = text.match(regex);
+              console.log(checkEmoji)
+              if (checkEmoji) {
+                if (checkEmoji.index === 0) {
+                  let html = text.substring(0, checkEmoji[0].length)
+                  currentFocus.children[0].textContent = text.substring(checkEmoji[0].length, text.length)
+                  index = t.emojiToText(currentFocus, twemoji.parse(html), checkEmoji.index);
+                  t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
+                } else {
+                  let html = text.substring(checkEmoji.index, text.length)
+                  currentFocus.children[0].textContent = text.substring(0, checkEmoji.index)
+                  index = t.emojiToText(currentFocus, twemoji.parse(html), checkEmoji.index);
+                  console.log(index)
+                  t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
+                }
+                t.focus();
+              } else {
+                console.log('fuck')
+                let currentBlock = currentFocus.parentElement.closest('.block');
+                let indexChildrenOfBlock = Array.prototype.indexOf.call(currentBlock.children, currentFocus);
+                const indexChildrenOfEditor = Array.prototype.indexOf.call(currentBlock.parentNode.children, currentBlock);
+                t.setPos(indexChildrenOfEditor, indexChildrenOfBlock)
+                t.focus();
+              }
+            }
+          } else if (currentFocus.className === 'emoji-text') {
+            console.log('emoji')
+            let html = currentFocus.textContent;
+            let index = t.emojiToEmoji(currentFocus, twemoji.parse(html), currentOffset, true);
+            console.log(index)
+            t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock);
+            t.focus();
+          } else {
+            console.log('dame it');
+            console.log(currentFocus);
           }
           t.updateMirror();
         }
       }
       compositing = false;
-    })
-    t.content.body.querySelector('span').addEventListener('blur', function(e){
-      if (t.content.body.querySelector('span').textContent.trim() === '') {
-        t.content.body.querySelector('span').innerHTML = '';
-      }
+    }, false)
+    t.editor.addEventListener('blur', function(e){
+      // if (t.content.body.querySelector('span').textContent.trim() === '') {
+      //   t.content.body.querySelector('span').innerHTML = '';
+      // }
       t.updateMirror();
     }, false);
-    t.content.body.querySelector('span').addEventListener('keydown', function(e){
-      if (e.keyCode === 13) {
-        e.preventDefault();
-        if (t.content.body.querySelector('span').textContent.trim() === '') {
+    t.editor.addEventListener('keydown', function(e){
+      if (e.keyCode === 8 || e.keyCode === 46) {
+        console.log('delete')
+        selection = t.content.getSelection();
+        range = selection.getRangeAt(0);
+        console.log(range.endOffset)
+        const currentOffset = range.endOffset
+        let currentBlock = selection.focusNode.parentElement.closest('.block');
+        console.log(selection.focusNode.cloneNode(true))
+        console.log(currentBlock.textContent === '')
+        const index = Array.prototype.indexOf.call(currentBlock.parentElement.children, currentBlock);
+        if (currentBlock.textContent === '') {
+          e.preventDefault();
+          if (index === 0) {
+            // if (currentBlock.children[0].children[0].tag)
+          } else {
+            currentBlock.remove();
+            console.log("aaaaa");
+            if (t.editor.children[index - 1].textContent === '') {
+              t.setPos(index - 1, 0, true);
+            } else {
+              t.setPos(index - 1, t.editor.children[index - 1].children.length - 1);
+            }
+            t.focus();
+          }
           return;
         }
-        if (t.content.getSelection) {
-          // IE9 and non-IE
-          sel = t.content.getSelection();
-          if (sel.getRangeAt && sel.rangeCount) {
-            range = sel.getRangeAt(0);
-            console.log(range.endOffset)
-            const currentOffset = range.endOffset
-            console.log(sel.anchorNode.className)
-            console.log(sel.anchorNode.parentNode)
-            let indexFocus = 0;
-            if (sel.anchorNode.className === 'editor') {
-              console.log('aaaaa')
-              let html = '<span><span><br></span><span>';
-//               sel.anchorNode.parentNode.innerHTML = '';
-              indexFocus = t.emojiToEditor(sel, twemoji.parse(html), currentOffset);
-              t.setPos(indexFocus);
-              t.focus();
-            } else if (sel.anchorNode.parentNode.parentNode.parentNode.parentNode.className === 'emoji-text') {
-              console.log('bbbbb')
-//               html = sel.anchorNode.parentNode.innerHTML;
-//               indexFocus = t.emojiToEmoji(sel, twemoji.parse(html), currentOffset, true)
-//               t.setPos(indexFocus);
-//               t.focus();
-            } else if (sel.anchorNode.parentNode.parentNode.className === 'text') {
-              console.log('ccccc')
-//               let text = sel.anchorNode.parentNode.innerHTML
-//               let checkEmoji = text.match(regex)
-//               if (checkEmoji) {
-//                 if (checkEmoji.index === 0) {
-//                   let html = text.substring(0, checkEmoji[0].length)
-//                   indexFocus = t.emojiToText2(sel, twemoji.parse(html), checkEmoji.index, text.substring(checkEmoji[0].length, text.length));
-//                 } else {
-//                   let html = text.substring(checkEmoji.index, text.length)
-//                   indexFocus = t.emojiToText2(sel, twemoji.parse(html), checkEmoji.index);
-//                 }
-//                 t.setPos(indexFocus);
-//                 t.focus();
-//               }
-            }
-            t.updateMirror();
+
+        if (currentOffset === 0 && currentBlock.children.length > 0) {
+          e.preventDefault();
+          let indexChildrenOfBlock = t.editor.children[index - 1].children.length - 1;
+          for (let i = 0; i < currentBlock.children.length; i++) {
+            let element = currentBlock.children[i].cloneNode(true);
+            t.editor.children[index - 1].appendChild(element);
+          }
+          currentBlock.remove();
+          t.setPos(index - 1, indexChildrenOfBlock);
+          t.focus();
+        }
+      } else if (e.keyCode === 13) {
+        if (compositing || pasting) {
+          return;
+        }
+        e.preventDefault();
+        sel = t.content.getSelection();
+        range = sel.getRangeAt(0);
+        console.log(range.endOffset)
+        const currentOffset = range.endOffset
+        let currentFocus = sel.focusNode;
+        if (currentFocus.nodeName === '#text') {
+          if (currentFocus.parentElement.closest('.emoji-text')) {
+            currentFocus = currentFocus.parentElement.closest('.emoji-text');
+          } else {
+            currentFocus = currentFocus.parentElement.closest('.text')
           }
         }
-      }
-    }, false);
-    t.content.body.querySelector('span').addEventListener('keyup', function(e){
-      if (e.keyCode === 8 || e.keyCode === 46) {
-        console.log(t.content.body.querySelector('span').textContent.trim())
-        console.log('delete')
-        if (t.content.body.querySelector('span').textContent.trim() === '') {
-          e.preventDefault();
-          t.content.body.querySelector('span').innerHTML = '';
+        let currentBlock = currentFocus.parentElement.closest('.block');
+        let indexChildrenOfBlock = Array.prototype.indexOf.call(currentBlock.children, currentFocus);
+        const indexChildrenOfEditor = Array.prototype.indexOf.call(currentBlock.parentNode.children, currentBlock);
+        console.log(currentFocus)
+        console.log(indexChildrenOfBlock)
+        console.log(indexChildrenOfEditor)
+        if (indexChildrenOfBlock === 0) {
+          console.log("1222????")
+          if (currentOffset === 0) {
+            const newBlock = currentBlock.cloneNode(true);
+            currentBlock.innerHTML = '';
+            currentBlock.appendChild(createBrSpan());
+            t.editor.insertBefore(newBlock, t.editor.children[indexChildrenOfEditor].nextSibling)
+          } else {
+            if (currentFocus.className === 'text') {
+              console.log('bbbbb')
+              const text = currentFocus.textContent;
+              let html = text.substring(currentOffset, text.length)
+              const newBlock = currentBlock.cloneNode(true);
+              newBlock.removeChild(newBlock.firstChild)
+              if (html !== '') {
+                newBlock.prepend(createTextSpan(html))
+              }
+              if (html ==='' && newBlock.children.length === 0) {
+                newBlock.appendChild(createBrSpan())
+              } 
+              currentFocus.children[0].textContent = text.substring(0, currentOffset);
+              currentFocusNew = currentFocus.cloneNode(true);
+              currentBlock.innerHTML = ''
+              currentBlock.appendChild(currentFocusNew);
+              t.editor.insertBefore(newBlock, t.editor.children[indexChildrenOfEditor].nextSibling)
+            } else {
+              console.log('aaaaa')
+              t.editor.insertBefore(createBlock(), t.editor.children[indexChildrenOfEditor].nextSibling)
+              const childrenLength = currentBlock.children.length;
+              if (indexChildrenOfBlock !== childrenLength - 1 && currentOffset !== currentBlock.textContent.length) {
+                let newBlock = t.editor.children[indexChildrenOfEditor + 1];
+                newBlock.innerHTML = '';
+                for (let i = indexChildrenOfBlock + 1; i < childrenLength; i++) {
+                  let element = currentBlock.children[indexChildrenOfBlock + 1].cloneNode(true);
+                  currentBlock.children[indexChildrenOfBlock + 1].remove();
+                  newBlock.appendChild(element);
+                }
+              }
+            }
+          }
+          t.setPos(indexChildrenOfEditor + 1, 0, true)
+          t.focus();
+        } else if (indexChildrenOfBlock === currentBlock.children.length - 1) {
+          console.log("????")
+          if (currentFocus.className === 'text') {
+            console.log("text")
+            if (currentOffset === currentFocus.textContent.length) {
+              console.log("aaaa")
+              t.editor.insertBefore(createBlock(), t.editor.children[indexChildrenOfEditor].nextSibling)
+            } else if(currentOffset === 0) {
+              console.log("bbbb")
+              let html = currentFocus.textContent;
+              currentFocus.remove();
+              let div = document.createElement('div')
+              div.appendChild(createTextSpan(html));
+              t.editor.insertBefore(createBlock(div.innerHTML), t.editor.children[indexChildrenOfEditor].nextSibling)
+            } else {
+              console.log("cccc")
+              const text = currentFocus.textContent;
+              let html = text.substring(currentOffset, text.length);
+              currentFocus.children[0].textContent = text.substring(0, currentOffset);
+              let div = document.createElement('div')
+              div.appendChild(createTextSpan(html));
+              t.editor.insertBefore(createBlock(div.innerHTML), t.editor.children[indexChildrenOfEditor].nextSibling)
+            }
+          } else {
+            t.editor.insertBefore(createBlock(), t.editor.children[indexChildrenOfEditor].nextSibling)
+          }
+          t.setPos(indexChildrenOfEditor + 1, 0, true)
+          t.focus();
+        } else {
+          t.editor.insertBefore(createBlock(), t.editor.children[indexChildrenOfEditor].nextSibling)
+          let newBlock = t.editor.children[indexChildrenOfEditor + 1];
+          newBlock.innerHTML = '';
+          if (currentFocus.className === 'text') {
+            if (currentOffset === currentFocus.textContent.length) {
+              const childrenLength = currentBlock.children.length;
+              for (let i = indexChildrenOfBlock + 1; i < childrenLength; i++) {
+                let element = currentBlock.children[indexChildrenOfBlock + 1].cloneNode(true);
+                currentBlock.children[indexChildrenOfBlock + 1].remove();
+                newBlock.appendChild(element);
+              }
+            } else {
+              const text = currentFocus.textContent;
+              let html = text.substring(currentOffset, text.length);
+              currentFocus.children[0].textContent = text.substring(0, currentOffset);
+              newBlock.appendChild(createTextSpan(html))
+              const childrenLength = currentBlock.children.length;
+              for (let i = indexChildrenOfBlock + 1; i < childrenLength; i++) {
+                let element = currentBlock.children[indexChildrenOfBlock + 1].cloneNode(true);
+                currentBlock.children[indexChildrenOfBlock + 1].remove();
+                newBlock.appendChild(element);
+              }
+            }
+          } else {
+            const childrenLength = currentBlock.children.length;
+            for (let i = indexChildrenOfBlock + 1; i < childrenLength; i++) {
+              let element = currentBlock.children[indexChildrenOfBlock + 1].cloneNode(true);
+              currentBlock.children[indexChildrenOfBlock + 1].remove();
+              newBlock.appendChild(element);
+            }
+          }
+          t.setPos(indexChildrenOfEditor + 1, 0, true)
+          t.focus();
         }
       }
     }, false);
-    t.content.body.querySelector('span').addEventListener('input', function(e){
-      if (compositing) {
-        return;
+    t.editor.addEventListener('keyup', function(e){
+      if (e.keyCode === 8 || e.keyCode === 46) {
+        
+        selection = t.content.getSelection();
+        console.log(selection.focusNode.cloneNode(true))
+        if (selection.focusNode.className === 'block') {
+          console.log('delete')
+          selection.focusNode.innerHTML = createBlock().innerHTML;
+          const indexChildrenOfEditor = Array.prototype.indexOf.call(selection.focusNode.parentNode.children, selection.focusNode);
+          t.setPos(indexChildrenOfEditor, 0, true);
+          t.focus();
+        }
       }
-      if (entering) {
-        sel1 = t.content.getSelection();
+    }, false);
+    t.editor.addEventListener('input', function(e){
+      if (compositing || pasting) {
         return;
       }
       if (t.content.getSelection) {
@@ -440,39 +669,60 @@ var TwemojiInput = function(obj){
           range = sel.getRangeAt(0);
           console.log(range.endOffset)
           const currentOffset = range.endOffset
-          console.log(sel.anchorNode.className)
-          console.log(sel.anchorNode.parentNode)
-          let indexFocus = 0;
-          if (sel.anchorNode.parentNode.className === 'editor') {
-            html = sel.anchorNode.parentNode.innerHTML;
-            sel.anchorNode.parentNode.innerHTML = '';
-            indexFocus = t.emojiToEditor(sel, twemoji.parse(html), currentOffset);
-            t.setPos(indexFocus);
-            t.focus();
-          } else if (sel.anchorNode.parentNode.parentNode.parentNode.parentNode.className === 'emoji-text') {
-            html = sel.anchorNode.parentNode.innerHTML;
-            indexFocus = t.emojiToEmoji(sel, twemoji.parse(html), currentOffset, true)
-            t.setPos(indexFocus);
-            t.focus();
-          } else if (sel.anchorNode.parentNode.parentNode.className === 'text') {
-            let text = sel.anchorNode.parentNode.innerHTML
-            let checkEmoji = text.match(regex)
-            if (checkEmoji) {
-              if (checkEmoji.index === 0) {
-                let html = text.substring(0, checkEmoji[0].length)
-                indexFocus = t.emojiToText2(sel, twemoji.parse(html), checkEmoji.index, text.substring(checkEmoji[0].length, text.length));
-              } else {
-                let html = text.substring(checkEmoji.index, text.length)
-                indexFocus = t.emojiToText2(sel, twemoji.parse(html), checkEmoji.index);
-              }
-              t.setPos(indexFocus);
-              t.focus();
+          let currentFocus = sel.focusNode;
+          if (currentFocus.nodeName === '#text') {
+            if (currentFocus.parentElement.closest('.emoji-text')) {
+              currentFocus = currentFocus.parentElement.closest('.emoji-text');
+            } else {
+              currentFocus = currentFocus.parentElement.closest('.text')
             }
+          }
+          const tmp = currentFocus.cloneNode(true);
+          console.log(tmp)
+          console.log(tmp.innerHTML)
+          if (currentFocus.className === 'text') {
+            if (currentFocus.parentNode.children.length === 1 && currentFocus.children.length === 0) {
+              let html = currentFocus.textContent;
+              currentFocus.textContent = '';
+              const index = t.emojiToText(currentFocus, twemoji.parse(html), currentOffset)
+              t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
+              t.focus();
+            } else {
+              let text = currentFocus.textContent;
+              let checkEmoji = text.match(regex);
+              console.log(checkEmoji)
+              if (checkEmoji) {
+                if (checkEmoji.index === 0) {
+                  let html = text.substring(0, checkEmoji[0].length)
+                  currentFocus.children[0].textContent = text.substring(checkEmoji[0].length, text.length)
+                  index = t.emojiToText(currentFocus, twemoji.parse(html), checkEmoji.index);
+                  t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
+                } else {
+                  let html = text.substring(checkEmoji.index, text.length)
+                  currentFocus.children[0].textContent = text.substring(0, checkEmoji.index)
+                  index = t.emojiToText(currentFocus, twemoji.parse(html), checkEmoji.index);
+                  t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock)
+                }
+                t.focus();
+              }
+            }
+          } else if (currentFocus.className === 'emoji-text') {
+            let html = currentFocus.textContent;
+            let index = t.emojiToEmoji(currentFocus, twemoji.parse(html), currentOffset, true);
+            t.setPos(index.indexChildrenOfEditor, index.indexChildrenOfBlock);
+            t.focus();
           }
           t.updateMirror();
         }
       }
     }, false);
+    t.editor.addEventListener('paste', (e) => {
+      e.preventDefault();
+      pasting = true;
+      console.log('aaaaa')
+      t.paste(handlePaste(e))
+      pasting = false;
+    });
   };
 
   Editor.prototype.init = function(){
@@ -487,17 +737,14 @@ var TwemojiInput = function(obj){
     t.frame.onload = function(){
       t.content = (t.frame.contentDocument || t.frame.document);
       t.content.body.className = prefix + "_body"
-      let div = document.createElement('div')
-      let span = document.createElement('span')
-      div.appendChild(span);
-      t.content.body.appendChild(div);
-      t.content.body.querySelector('span').className = 'editor';
-      t.content.body.querySelector('span').setAttribute('contenteditable','true');
-      t.content.body.querySelector('span').setAttribute('aria-autocomplete','list');
-      t.content.body.querySelector('span').setAttribute('data-placeholder','Content');
-      t.content.body.querySelector('span').addEventListener('paste', (e) => {
-        t.insertImage(handlePaste(e))
-      });
+      let editor = document.createElement('div')
+      editor.className = 'editor';
+      editor.setAttribute('contenteditable','true');
+      editor.setAttribute('aria-autocomplete','list');
+      editor.setAttribute('data-placeholder','Content');
+      editor.appendChild(createBlock());
+      t.content.body.appendChild(editor);
+      t.editor = editor;
 
       t.addStyles();
       t.listenChanges();
@@ -595,6 +842,7 @@ var TwemojiInput = function(obj){
         createItem();
       }
     }
+    loading = true;
   };
 
 
@@ -632,10 +880,12 @@ var TwemojiInput = function(obj){
     }
   }
 
-  defaultIcon.onclick = function(e){
-    e.preventDefault();
-    toggleBox();
-  };
+  if (loading) {
+    defaultIcon.onclick = function(e){
+      e.preventDefault();
+      toggleBox();
+    };
+  }
 
   document.onclick = function(e){
     if (e.target == defaultIcon) {
@@ -666,9 +916,6 @@ function convertSpanToText(dom) {
 }
 
 function convertImgToSpan(dom) {
-  console.log(dom)
-  console.log(dom.match(/\n/g))
-  dom = dom.replace(/\n/g, '<span class="text"><span><br/></span></span>')
   let tmp = document.createElement("div");
   tmp.innerHTML = dom;
   const numberOfChildNode = tmp.childNodes.length;
@@ -678,38 +925,71 @@ function convertImgToSpan(dom) {
   return tmp.innerHTML;
 }
 
+function createBlockForPaste(html) {
+  const blocks = html.split(/[\r(\n)?]/g);
+  let tmp = document.createElement('div');
+  blocks.forEach((block) => {
+    if (block === '') {
+      tmp.appendChild(createBlock());
+    } else {
+      tmp.appendChild(createBlock(convertImgToSpan(twemoji.parse(block))))
+    }
+  })
+  return tmp;
+}
+
+function createBlock(html='') {
+  let div = document.createElement('div')
+  div.className = 'block';
+  if (html === '') {
+    div.appendChild(createBrSpan());
+  } else {
+    div.innerHTML = html;
+  }
+  
+  return div;
+}
+
 function createSpan(el) {
-  console.log(el)
   if (el.nodeName == 'IMG') {
-    let img_span = document.createElement("span");
-  // span.setAttribute('contenteditable','false');
-    let circle_span = document.createElement("span");
-    let offset_span = document.createElement("span");
-    let text_span = document.createElement("span");
-    img_span.className = 'emoji-text';
-    img_span.style.cssText = `background-image: url(${el.src}); background-size: 1em 1em; padding: 0.15em; background-position: center center; background-repeat: no-repeat;`;
-    circle_span.style.cssText = 'clip-path: circle(0% at 50% 50%);';
-    text_span.innerText = el.alt;
-    offset_span.appendChild(text_span)
-    circle_span.appendChild(offset_span)
-    img_span.appendChild(circle_span)
-    return img_span;
+    return createImgSpan(el.src, el.alt);
   } else if (el.nodeName == '#text') { // tmp.childNodes[i].nodeName = '#text'
-    let offset_span = document.createElement("span");
-    let text_span = document.createElement("span");
-    offset_span.className = 'text';
-    text_span.innerText = el.data;
-    offset_span.appendChild(text_span)
-    return offset_span;
+    return createTextSpan(el.data)
   } else {
     return el;
   }
 }
 
-function createBlockContent() {
-  let tmp = document.createElement('div')
-  tmp.className = 'block-content';
-  return 
+function createImgSpan(src, text) {
+  let img_span = document.createElement("span");
+  let circle_span = document.createElement("span");
+  let offset_span = document.createElement("span");
+  let text_span = document.createElement("span");
+  img_span.className = 'emoji-text';
+  img_span.style.cssText = `background-image: url(${src}); background-size: 1em 1em; padding: 0.15em; background-position: center center; background-repeat: no-repeat;`;
+  circle_span.style.cssText = 'clip-path: circle(0% at 50% 50%);';
+  text_span.innerText = text;
+  offset_span.appendChild(text_span)
+  circle_span.appendChild(offset_span)
+  img_span.appendChild(circle_span)
+  return img_span;
+}
+
+function createTextSpan(text) {
+  let offset_span = document.createElement("span");
+  let text_span = document.createElement("span");
+  offset_span.className = 'text';
+  text_span.innerText = text;
+  offset_span.appendChild(text_span)
+  return offset_span;
+}
+
+function createBrSpan() {
+  let span = document.createElement("span");
+  let br = document.createElement("br");
+  span.className = 'text';
+  span.appendChild(br);
+  return span;
 }
 
 function handlePaste(e) {
@@ -724,10 +1004,11 @@ function handlePaste(e) {
   pastedData = clipboardData.getData('Text');
 
   // Do whatever with pasteddata
-  return twemoji.parse(pastedData);
+  return pastedData;
 }
 
 window.addEventListener('DOMContentLoaded', function() {
   twemoji.base = './twemoji/';
   var Twemoji = new TwemojiInput(document.querySelector('._twemoji_input'));
+  console.log(twemoji.convert.toCodePoint('😮‍💨'))
 });
